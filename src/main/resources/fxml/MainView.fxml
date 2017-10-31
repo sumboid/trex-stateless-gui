@@ -42,7 +42,7 @@
                     <MenuItem id="main-traffic-profiles-menu-traffic-profiles"
                               mnemonicParsing="false"
                               text="Traffic Profiles"
-                              onAction="#openTrafficProfile"/>
+                              onAction="#openTrafficProfileDialog"/>
                 </Menu>
                 <Menu mnemonicParsing="false"
                       text="Stats">
@@ -138,7 +138,7 @@
                                prefWidth="24.0"
                                styleClass="connectIcon">
                             <tooltip>
-                                <Tooltip fx:id="connectDixconnectTooltip" text="Connect to TRex server"/>
+                                <Tooltip fx:id="connectDisconnectTooltip" text="Connect to TRex server"/>
                             </tooltip>
                         </Label>
                     </children>
