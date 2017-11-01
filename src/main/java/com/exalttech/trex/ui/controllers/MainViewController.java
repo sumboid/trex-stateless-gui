@@ -108,10 +108,15 @@ public class MainViewController
                PacketTableUpdatedHandler {
 
     private static final Logger LOG = Logger.getLogger(MainViewController.class.getName());
+    private static final String DISABLED_MULTIPLIER_MSG = "Multiplier is disabled because all streams have latency enabled";
+    private static final String DISCONNECT_MENU_ITEM_TITLE = "Disconnect";
+    private static final String CONNECT_MENU_ITEM_TITLE = "Connect";
     private final RPCMethods serverRPCMethods = TrexApp.injector.getInstance(RPCMethods.class);
     private final RunningConfiguration runningConfiguration = TrexApp.injector.getInstance(RunningConfiguration.class);
-    private static final String DISABLED_MULTIPLIER_MSG = "Multiplier is disabled because all streams have latency enabled";
-
+    private final Map<Integer, CustomTreeItem> portTreeItemMap = new HashMap<>();
+    private final BooleanProperty updateProfileListProperty = new SimpleBooleanProperty();
+    private final Map<Integer, AssignedProfile> assignedPortProfileMap = new HashMap<>();
+    private final BooleanProperty disableProfileProperty = new SimpleBooleanProperty();
     @FXML
     TreeView<Object> devicesTree;
     @FXML
@@ -133,7 +138,7 @@ public class MainViewController
     @FXML
     AnchorPane mainViewContainer;
     @FXML
-    MenuItem connectMenuItem;
+    MenuItem toggleConnectionMenuItem;
     @FXML
     Label serverStatusLabel;
     @FXML
@@ -142,12 +147,10 @@ public class MainViewController
     MenuItem statsMenuItem;
     @FXML
     MenuItem captureMenuItem;
-
     @FXML
     AnchorPane multiplierOptionContainer;
     @FXML
     Pane notificationPanelHolder;
-
     @FXML
     Button updateBtn;
     @FXML
@@ -156,15 +159,12 @@ public class MainViewController
     Button newProfileBtn;
     @FXML
     Button duplicateProfileBtn;
-
     @FXML
     AnchorPane logContainer;
-
     @FXML
     Label startStream;
     @FXML
     Label startAllStream;
-
     @FXML
     Label stopStream;
     @FXML
@@ -179,7 +179,6 @@ public class MainViewController
     Label connectIcon;
     @FXML
     Label clearCache;
-
     @FXML
     Label countdownValue;
     @FXML
@@ -193,46 +192,33 @@ public class MainViewController
     @FXML
     Label dashboardIcon;
     @FXML
-    Tooltip connectDisconnectTooltip;
+    Tooltip toggleConnectionBtnTooltip;
     @FXML
     ImageView devicesTreeArrowContainer;
     @FXML
     SplitPane mainViewSplitPanel;
-
     @FXML
     PortView portView;
-
     @FXML
     Label serviceModeLabel;
-
     private BooleanProperty portViewVisibilityProperty = new SimpleBooleanProperty(false);
     private BooleanProperty systemInfoVisibilityProperty = new SimpleBooleanProperty(true);
-
     private ContextMenu rightClickPortMenu;
     private ContextMenu rightClickProfileMenu;
     private ContextMenu rightClickGlobalMenu;
-
     private SystemInfoReq systemInfoReq = null;
     private PacketTableView tableView;
     private RefreshingService refreshStatsService = new RefreshingService();
-    private final Map<Integer, CustomTreeItem> portTreeItemMap = new HashMap<>();
-    private final BooleanProperty updateProfileListProperty = new SimpleBooleanProperty();
-    private final Map<Integer, AssignedProfile> assignedPortProfileMap = new HashMap<>();
-
     private Profile[] loadedProfiles;
     private String currentSelectedProfile;
     private MultiplierView multiplierView;
     private boolean reAssign = false;
     private CountdownService countdownService;
     private PortsManager portManager;
-    private final BooleanProperty disableProfileProperty = new SimpleBooleanProperty();
     private StatsTableGenerator statsTableGenerator;
     private boolean doAssignProfile = true;
     private boolean allStreamWithLatency;
     private boolean isFirstPortStatusRequest = true;
-    private static final String DISCONNECT_MENU_ITEM_TITLE = "Disconnect";
-    private static final String CONNECT_MENU_ITEM_TITLE = "Connect";
-
     private int lastLoadedPortPtofileIndex = -1;
     private boolean profileLoaded = false;
 
@@ -243,7 +229,8 @@ public class MainViewController
     private EventBus eventBus;
     private boolean resetAppInProgress;
     private BooleanProperty trafficProfileLoadedProperty = new SimpleBooleanProperty(false);
-    private int prevViewvedPortPtofileIndex = -1;
+    private int prevViewedPortProfileIndex = -1;
+
 
     @Override
     public void initialize(URL url, ResourceBundle rb) {
@@ -252,6 +239,20 @@ public class MainViewController
         statsTableGenerator = new StatsTableGenerator();
         leftArrow = new Image("/icons/arrow_left.png");
         rightArrow = new Image("/icons/arrow_right.png");
+
+        TrexApp.getPrimaryStage().setOnCloseRequest(event -> {
+            handleAppClose();
+        });
+        TrexApp.getPrimaryStage().setOnShown(event -> TrexApp
+            .getPrimaryStage()
+            .focusedProperty()
+            .addListener((ObservableValue<? extends Boolean> observable, Boolean oldValue, Boolean newValue) -> {
+                if (newValue && tableView.isStreamEditingWindowOpen()) {
+                    tableView.setStreamEditingWindowOpen(false);
+                    streamTableUpdated();
+                }
+            }));
+
         initializeInlineComponent();
         logsContainer.setDisable(false);
         eventBus = TrexApp.injector.getInstance(EventBus.class);
@@ -259,9 +260,7 @@ public class MainViewController
         statTableContainer.visibleProperty().bindBidirectional(systemInfoVisibilityProperty);
 
         ConnectionManager.getInstance().addDisconnectListener(() -> resetApplication(true));
-        // Handle update port state event
         AsyncResponseManager.getInstance().asyncEventObjectProperty().addListener((observable, oldValue, newVal) -> {
-
             switch (newVal.getType()) {
                 case PORT_RELEASED:
                 case PORT_ACQUIRED:
@@ -295,21 +294,17 @@ public class MainViewController
         });
     }
 
-
     @FXML
-    public void handleConnectMenuItemClicked(ActionEvent event) {
-        doConnectDisconnect();
+    public void handleToggleConnectMenuItemClicked(ActionEvent event) {
+        toggleConnection();
     }
 
     @FXML
-    public void handleConnectDisconnectBtnClicked(MouseEvent event) {
-        doConnectDisconnect();
+    public void handleToggleConnectionBtnClicked(MouseEvent event) {
+        toggleConnection();
     }
 
-    /**
-     * Connect/Disconnect to TRex server
-     */
-    private void doConnectDisconnect() {
+    private void toggleConnection() {
         if (ConnectionManager.getInstance().isConnected()) {
             resetApplication(false);
         } else {
@@ -320,8 +315,28 @@ public class MainViewController
     @FXML
     public void handleExitMenuItemClick(ActionEvent event) {
         handleAppClose();
+    }
+
+    private void handleAppClose() {
+        DialogManager.getInstance().closeAll();
+
+        try {
+            if (!portManager.getPortList().isEmpty() && !portManager.getPortList().isEmpty()) {
+                releaseAllPorts(false);
+            }
+
+            shutdownRunningServices();
+
+            if (ConnectionManager.getInstance().isConnected()) {
+                ConnectionManager.getInstance().disconnect();
+            }
+        } catch (Exception ex) {
+            LOG.error("Error closing the application", ex);
+        }
+
         System.exit(0);
     }
+
 
     private void openConnectDialog() {
         try {
@@ -338,8 +353,8 @@ public class MainViewController
                 serverStatusLabel.setText("Connected");
                 serverStatusIcon.setImage(new Image("/icons/connectedIcon.gif"));
                 connectIcon.getStyleClass().add("disconnectIcon");
-                connectDisconnectTooltip.setText("Disconnect from TRex server");
-                connectMenuItem.setText(DISCONNECT_MENU_ITEM_TITLE);
+                toggleConnectionBtnTooltip.setText("Disconnect from TRex server");
+                toggleConnectionMenuItem.setText(DISCONNECT_MENU_ITEM_TITLE);
                 statsMenuItem.setDisable(false);
                 captureMenuItem.setDisable(false);
                 clearCache.setDisable(false);
@@ -522,7 +537,7 @@ public class MainViewController
     private void resetApplication(boolean didServerCrash) {
         Platform.runLater(() -> {
             if (!didServerCrash) {
-                releaseAllPort(false);
+                releaseAllPorts(false);
             }
 
             StatsStorage.getInstance().stopPolling();
@@ -542,14 +557,14 @@ public class MainViewController
 
             DialogManager.getInstance().closeAll();
 
-            connectMenuItem.setText(CONNECT_MENU_ITEM_TITLE);
+            toggleConnectionMenuItem.setText(CONNECT_MENU_ITEM_TITLE);
             statsMenuItem.setDisable(true);
             captureMenuItem.setDisable(true);
             dashboardIcon.setDisable(true);
             serverStatusIcon.setImage(new Image("/icons/offline.png"));
             serverStatusLabel.setText("Disconnected");
             connectIcon.getStyleClass().remove("disconnectIcon");
-            connectDisconnectTooltip.setText("Connect to TRex server");
+            toggleConnectionBtnTooltip.setText("Connect to TRex server");
 
             // reset Header btns
             startStream.setDisable(true);
@@ -631,7 +646,7 @@ public class MainViewController
                 multiplierView.fillAssignedProfileValues(assigned);
             }
 
-            prevViewvedPortPtofileIndex = portIndex;
+            prevViewedPortProfileIndex = portIndex;
         } catch (Exception ex) {
             LOG.error("Error loading profile", ex);
         }
@@ -704,20 +719,38 @@ public class MainViewController
     }
 
     private void initializeInlineComponent() {
-        updateBtn.setGraphic(new ImageView(new Image("/icons/apply.png")));
-        newProfileBtn.setGraphic(new ImageView(new Image("/icons/add_profile.png")));
-        duplicateProfileBtn.setGraphic(new ImageView(new Image("/icons/clone_profile.png")));
-        stopUpdateBtn.setGraphic(new ImageView(new Image("/icons/stop_update.png")));
-        devicesTreeArrowContainer.setImage(leftArrow);
-        // mapped profiles enabling with property
-        profileListBox.disableProperty().bind(disableProfileProperty);
-        newProfileBtn.disableProperty().bind(disableProfileProperty);
-        duplicateProfileBtn.disableProperty().bind(disableProfileProperty);
-        profileDetailLabel.disableProperty().bind(disableProfileProperty);
-        profileListBox.getItems().clear();
-        profileListBox.setItems(FXCollections.observableArrayList(getProfilesNameList()));
+        initializeButtons();
+        initializeProfileListBox();
 
-        profileListBox.valueProperty().addListener(new UpdateProfileListener<>(profileListBox.getSelectionModel()));
+        devicesTreeArrowContainer.setImage(leftArrow);
+        profileDetailLabel.disableProperty().bind(disableProfileProperty);
+
+        initializeUpdateProfileListProperty();
+
+        tableView = new PacketTableView(230, this, true);
+        profileTableViewContainer.getChildren().add(tableView);
+        serverStatusIcon.setImage(new Image("/icons/offline.png"));
+
+        initializePortsContextMenu();
+
+        // initialize multiplexer
+        multiplierView = new MultiplierView(this);
+        multiplierOptionContainer.getChildren().add(multiplierView);
+        NotificationPanel notificationPanel = new NotificationPanel();
+        notificationPanel.setNotificationMsg(DISABLED_MULTIPLIER_MSG);
+        notificationPanelHolder.getChildren().add(notificationPanel);
+
+        logContainer.getChildren().add(LogsController.getInstance().getView());
+
+        initializeCountdownService();
+
+        devicesTree
+            .getSelectionModel()
+            .selectedItemProperty()
+            .addListener((ChangeListener<? super TreeItem<Object>>) (observable, oldValue, newValue) -> handleTreeItemSelectionChanged());
+    }
+
+    private void initializeUpdateProfileListProperty() {
         updateProfileListProperty.bind(ProfileManager.getInstance().getUpdatedProperty());
         updateProfileListProperty.addListener((ObservableValue<? extends Boolean> observable, Boolean oldValue, Boolean newValue) -> {
             List<String> profiles = getProfilesNameList();
@@ -727,11 +760,16 @@ public class MainViewController
                 profileDetailContainer.setVisible(false);
             }
         });
-        tableView = new PacketTableView(230, this, true);
-        profileTableViewContainer.getChildren().add(tableView);
-        serverStatusIcon.setImage(new Image("/icons/offline.png"));
+    }
 
-        // initialize right click menu
+    private void initializeProfileListBox() {
+        profileListBox.disableProperty().bind(disableProfileProperty);
+        profileListBox.getItems().clear();
+        profileListBox.setItems(FXCollections.observableArrayList(getProfilesNameList()));
+        profileListBox.valueProperty().addListener(new UpdateProfileListener<>(profileListBox.getSelectionModel()));
+    }
+
+    private void initializePortsContextMenu() {
         rightClickPortMenu = new ContextMenu();
         addMenuItem(rightClickPortMenu, "Acquire", ContextMenuClickType.ACQUIRE);
         addMenuItem(rightClickPortMenu, "Force Acquire", ContextMenuClickType.FORCE_ACQUIRE);
@@ -749,32 +787,21 @@ public class MainViewController
         addMenuItem(rightClickGlobalMenu, "Acquire All Ports", ContextMenuClickType.ACQUIRE_ALL);
         addMenuItem(rightClickGlobalMenu, "Force Acquire All Ports", ContextMenuClickType.FORCE_ACQUIRE_ALL);
         addMenuItem(rightClickGlobalMenu, "Re-Acquire my Ports", ContextMenuClickType.ACQUIRE_MY_PORT);
+    }
 
-        // initialize multiplexer
-        multiplierView = new MultiplierView(this);
-        multiplierOptionContainer.getChildren().add(multiplierView);
-        NotificationPanel notificationPanel = new NotificationPanel();
-        notificationPanel.setNotificationMsg(DISABLED_MULTIPLIER_MSG);
-        notificationPanelHolder.getChildren().add(notificationPanel);
-        // add close
-        TrexApp.getPrimaryStage().setOnCloseRequest(event -> {
-            // handle aplpication close
-            DialogManager.getInstance().closeAll();
-            handleAppClose();
-        });
-        TrexApp.getPrimaryStage().setOnShown(event -> TrexApp
-            .getPrimaryStage()
-            .focusedProperty()
-            .addListener((ObservableValue<? extends Boolean> observable, Boolean oldValue, Boolean newValue) -> {
-                if (newValue && tableView.isStreamEditingWindowOpen()) {
-                    tableView.setStreamEditingWindowOpen(false);
-                    streamTableUpdated();
-                }
-            }));
-        TrexApp.getPrimaryStage().setOnCloseRequest(event -> System.exit(0));
-        logContainer.getChildren().add(LogsController.getInstance().getView());
+    private void initializeButtons() {
+        updateBtn.setGraphic(new ImageView(new Image("/icons/apply.png")));
 
-        // initialize countdown service
+        stopUpdateBtn.setGraphic(new ImageView(new Image("/icons/stop_update.png")));
+
+        newProfileBtn.setGraphic(new ImageView(new Image("/icons/add_profile.png")));
+        newProfileBtn.disableProperty().bind(disableProfileProperty);
+
+        duplicateProfileBtn.setGraphic(new ImageView(new Image("/icons/clone_profile.png")));
+        duplicateProfileBtn.disableProperty().bind(disableProfileProperty);
+    }
+
+    private void initializeCountdownService() {
         countdownService = new CountdownService();
         countdownService.setPeriod(Duration.seconds(Constants.REFRESH_ONE_INTERVAL_SECONDS));
         countdownService.setRestartOnFailure(false);
@@ -785,18 +812,8 @@ public class MainViewController
                 doUpdateAssignedProfile(getSelectedPortIndex());
             }
         });
-
-        devicesTree
-            .getSelectionModel()
-            .selectedItemProperty()
-            .addListener((ChangeListener<? super TreeItem<Object>>) (observable, oldValue, newValue) -> handleTreeItemSelectionChanged());
     }
 
-    /**
-     * Handle add new profile
-     *
-     * @param ev
-     */
     @FXML
     public void handleAddNewProfile(ActionEvent ev) {
         try {
@@ -809,11 +826,6 @@ public class MainViewController
         }
     }
 
-    /**
-     * Handle add new profile
-     *
-     * @param ev
-     */
     @FXML
     public void handleDuplicateProfile(ActionEvent ev) {
         try {
@@ -1075,7 +1087,7 @@ public class MainViewController
                     acquireAllPorts(true, true);
                     break;
                 case RELEASE_ALL:
-                    releaseAllPort(true);
+                    releaseAllPorts(true);
                     portManager.updatePortForce();
                     break;
                     
@@ -1117,7 +1129,7 @@ public class MainViewController
         }
     }
 
-    private void releaseAllPort(boolean stopTraffic) {
+    private void releaseAllPorts(boolean stopTraffic) {
         portManager.getPortList().forEach(port -> {
             if (PortsManager.getInstance().isCurrentUserOwner(port.getIndex())) {
                 releasePort(port.getIndex(), false, stopTraffic);
@@ -1170,23 +1182,6 @@ public class MainViewController
         multiplier.setType("pps");
         multiplier.setUnit("pps");
         assignedProf.setMultiplier(multiplier);
-    }
-
-    private void handleAppClose() {
-        try {
-            // stop running thread
-            shutdownRunningServices();
-            if (!portManager.getPortList().isEmpty() && !portManager.getPortList().isEmpty()) {
-                releaseAllPort(false);
-            }
-            // stop async subscriber
-            if (ConnectionManager.getInstance().isConnected()) {
-                ConnectionManager.getInstance().disconnect();
-            }
-        } catch (Exception ex) {
-            LOG.error("Error closing the application", ex);
-            System.exit(0);
-        }
     }
 
     private List<String> getProfilesNameList() {
@@ -1413,22 +1408,6 @@ public class MainViewController
         treeviewOpened = !treeviewOpened;
     }
 
-    private enum ContextMenuClickType {
-        ACQUIRE,
-        FORCE_ACQUIRE,
-        RELEASE_ACQUIRE,
-        ENABLE_SERVICE,
-        DISABLE_SERVICE,
-        PLAY,
-        STOP,
-        UNLOAD_PROFILE,
-        PAUSE,
-        ACQUIRE_ALL,
-        FORCE_ACQUIRE_ALL,
-        RELEASE_ALL,
-        ACQUIRE_MY_PORT
-    }
-
     @Subscribe
     public void handleScapyClientNeedConnectEvent(ScapyClientNeedConnectEvent event) {
         LogsController.getInstance().getView().setDisable(false);
@@ -1457,6 +1436,56 @@ public class MainViewController
         }
     }
 
+    private void unloadProfile() {
+        if (currentSelectedProfile == null) {
+            return;
+        }
+        Task<Void> unloadProfileTask = new Task<Void>() {
+            @Override
+            protected Void call() throws Exception {
+                TRexClient trexClient = ConnectionManager.getInstance().getTrexClient();
+                trexClient.stopTraffic(lastLoadedPortPtofileIndex);
+                trexClient.removeAllStreams(lastLoadedPortPtofileIndex);
+                return null;
+            }
+        };
+
+        unloadProfileTask.setOnSucceeded(event -> {
+            LogsController.getInstance().appendText(LogType.INFO, currentSelectedProfile +" profile unloaded");
+            currentSelectedProfile = Constants.SELECT_PROFILE;
+            assignedPortProfileMap.put(lastLoadedPortPtofileIndex, new AssignedProfile());
+            trafficProfileLoadedProperty.set(false);
+            portManager.updatedPorts(Collections.singletonList(lastLoadedPortPtofileIndex));
+        });
+        LogsController.getInstance().appendText(LogType.INFO, "Unloading " + currentSelectedProfile +" profile");
+        new Thread(unloadProfileTask).start();
+    }
+
+    private Optional<ButtonType> runConfirmationDialog(String header, String content) {
+        Dialog<ButtonType> alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.getDialogPane().getStyleClass().add("warning");
+        alert.setTitle("Warning");
+        alert.setHeaderText(header);
+        alert.setContentText(content);
+        return alert.showAndWait();
+    }
+
+    private enum ContextMenuClickType {
+        ACQUIRE,
+        FORCE_ACQUIRE,
+        RELEASE_ACQUIRE,
+        ENABLE_SERVICE,
+        DISABLE_SERVICE,
+        PLAY,
+        STOP,
+        UNLOAD_PROFILE,
+        PAUSE,
+        ACQUIRE_ALL,
+        FORCE_ACQUIRE_ALL,
+        RELEASE_ALL,
+        ACQUIRE_MY_PORT
+    }
+
     public class UpdateProfileListener<T> implements ChangeListener<T> {
 
         private final SelectionModel<T> selectionModel;
@@ -1471,10 +1500,10 @@ public class MainViewController
 
         @Override
         public void changed(ObservableValue<? extends T> observable, T oldValue, T newValue) {
-            if (reverting || lastLoadedPortPtofileIndex != prevViewvedPortPtofileIndex) {
+            if (reverting || lastLoadedPortPtofileIndex != prevViewedPortProfileIndex) {
                 return;
             }
-            
+
             if (!resetAppInProgress && !isAllowed()) {
                 reverting = true;
                 Platform.runLater(() -> {
@@ -1483,7 +1512,7 @@ public class MainViewController
                 });
                 return;
             }
-            
+
             try {
                 doAssignProfile = true;
                 String profileName = String.valueOf(newValue);
@@ -1509,11 +1538,11 @@ public class MainViewController
             int portIndex = getSelectedPortIndex();
             PortModel currentPortModel = portManager.getPortModel(portIndex);
             boolean isPortTransmit = currentPortModel.transmitStateProperty().get();
-            
+
             if (!isPortTransmit && Constants.SELECT_PROFILE.equals(selectionModel.getSelectedItem())) {
                 return true;
             }
-            
+
             if (isPortTransmit) {
                 String header = "Port "+portIndex+" in TX mode";
                 String content = "Assigning another profile to the port will stop it. Proceed?";
@@ -1522,39 +1551,5 @@ public class MainViewController
             }
             return true;
         }
-    }
-
-    private void unloadProfile() {
-        if (currentSelectedProfile == null) {
-            return;
-        }
-        Task<Void> unloadProfileTask = new Task<Void>() {
-            @Override
-            protected Void call() throws Exception {
-                TRexClient trexClient = ConnectionManager.getInstance().getTrexClient();
-                trexClient.stopTraffic(lastLoadedPortPtofileIndex);
-                trexClient.removeAllStreams(lastLoadedPortPtofileIndex);
-                return null;
-            }
-        };
-        
-        unloadProfileTask.setOnSucceeded(event -> {
-            LogsController.getInstance().appendText(LogType.INFO, currentSelectedProfile +" profile unloaded");
-            currentSelectedProfile = Constants.SELECT_PROFILE;
-            assignedPortProfileMap.put(lastLoadedPortPtofileIndex, new AssignedProfile());
-            trafficProfileLoadedProperty.set(false);
-            portManager.updatedPorts(Collections.singletonList(lastLoadedPortPtofileIndex));
-        });
-        LogsController.getInstance().appendText(LogType.INFO, "Unloading " + currentSelectedProfile +" profile");
-        new Thread(unloadProfileTask).start();
-    }
-
-    private Optional<ButtonType> runConfirmationDialog(String header, String content) {
-        Dialog<ButtonType> alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.getDialogPane().getStyleClass().add("warning");
-        alert.setTitle("Warning");
-        alert.setHeaderText(header);
-        alert.setContentText(content);
-        return alert.showAndWait();
     }
 }

@@ -21,12 +21,12 @@
                 <Menu id="main-menu"
                       mnemonicParsing="false"
                       text="File">
-                    <MenuItem fx:id="connectMenuItem"
+                    <MenuItem fx:id="toggleConnectionMenuItem"
                               id="main-menu-connect"
                               accelerator="Ctrl+Shift+C"
                               mnemonicParsing="false"
                               text="Connect"
-                              onAction="#handleConnectMenuItemClicked"/>
+                              onAction="#handleToggleConnectMenuItemClicked"/>
                     <MenuItem accelerator="Ctrl+Shift+P"
                               mnemonicParsing="false"
                               text="Preferences"
@@ -133,12 +133,12 @@
                         </Label>
                         <Label fx:id="connectIcon"
                                id="main-toolbar-connect"
-                               onMouseClicked="#handleConnectDisconnectBtnClicked"
+                               onMouseClicked="#handleToggleConnectionBtnClicked"
                                prefHeight="24.0"
                                prefWidth="24.0"
                                styleClass="connectIcon">
                             <tooltip>
-                                <Tooltip fx:id="connectDisconnectTooltip" text="Connect to TRex server"/>
+                                <Tooltip fx:id="toggleConnectionBtnTooltip" text="Connect to TRex server"/>
                             </tooltip>
                         </Label>
                     </children>
